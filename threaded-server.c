@@ -1,6 +1,6 @@
 /**
  * @file   threaded-server.c
- * @Author Naresh Kumar <arc391@rocketmail.com>
+ * @Author Naresh Kumar
  * @date   January, 2013
  * @brief  Multi-threaded Simple HTTP Server
  *
@@ -27,7 +27,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 
-#define LISTEN_BACKLOG  10      /* backlog of connections */
+#define LISTEN_BACKLOG  100     /* backlog of connections */
 #define LISTEN_PORT     8080    /* port to listen on */
 #define LOG_INFO        "info"  /* log level */
 #define LOG_ERROR       "error" /* log level */
@@ -37,15 +37,15 @@
 #define HTTP_MAX_PLEN   32      /* max version length */
 
 /* Global configuration structure */
-struct {
-        char serverRoot[PATH_MAX];
-        int port;
-} ServerConfiguration;
-
-/*
- * Return the size of the given file in Bytes.
- *
- * Return Codes:
+struct {                                                                                                                                                                                                                          
+        char serverRoot[PATH_MAX];                                                                                                                                                                                                
+        int port;                                                                                                                                                                                                                 
+} ServerConfiguration;                                                                                                                                                                                                            
+                                                                                                                                                                                                                                  
+/*                                                                                                                                                                                                                                
+ * Return the size of the given file in Bytes.                                                                                                                                                                                    
+ *                                                                                                                                                                                                                                
+ * Return Codes:                                                                                                                                                                                                                  
  * > 0 ; if file is regular file
  * -1  ; if lstat encountered any error
  * -2  ; if requested file is directory (needed for directory indexing)
@@ -104,8 +104,8 @@ int transferFile(const char *file, int out_fd)
                 if (in_fd != -1) {
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 200 OK\r\n");
                         offset = strlen(headers);
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "Content-Length: %d\r\n", size);
-                        offset = strlen(headers);
+                        //snprintf(headers + offset, HTTP_MAX_HLEN, "Content-Length: %d\r\n", size);
+                        //offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
                         write(out_fd, headers, strlen(headers));
                         sentbytes = sendfile(out_fd, in_fd, NULL, size);
@@ -137,6 +137,9 @@ int transferFile(const char *file, int out_fd)
         return sentbytes;
 }
 
+/*
+ * return the current time as string
+ */
 void getHTTPTime(time_t t, char *ltime)
 {
         time_t curtime = time(NULL);
@@ -184,13 +187,6 @@ void handleHTTPRequest(void *clientfd)
                         rbytes = transferFile(file_path, fd);
                         /* for logging to the stderr */
                         char ltime[27];
-                        /*
-                           time_t curtime = time(NULL);
-                           struct tm loctime;
-                           localtime_r(&curtime, &loctime);
-                           asctime_r(&loctime, ltime);
-                           ltime[strlen(ltime) - 1] = '\0';    // consume the newline
-                         */
                         getHTTPTime(time(NULL), ltime);
                         fprintf(stderr, "[%s] %s %s %s %ld\n", ltime, http_proto, http_method, http_url, rbytes);
                 } else {
@@ -204,12 +200,18 @@ void handleHTTPRequest(void *clientfd)
         close(fd);
 }
 
+/*
+ *
+ * Show the help for the program
+ *
+ */
 void showHelp(char **argv)
 {
         fprintf(stderr, "%s [port] [path/to/directory]\n", argv[0]);
         exit(EXIT_FAILURE);
 }
 
+/* This is where the program execution starts at runtime */
 int main(int argc, char **argv)
 {
         int sock;
@@ -251,6 +253,13 @@ int main(int argc, char **argv)
                 perror("setsockopt()");
                 return EXIT_FAILURE;
         }
+#ifdef TCP_DEFER_ACCEPT
+        /* defer accept until data is available */
+        if (setsockopt(sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, (char *)&sock, sizeof(int)) == -1) {
+                perror("setsockopt()");
+                return EXIT_FAILURE;
+        }
+#endif
 
         /* make sure structure is emptied correctly. */
         memset(&saddr, sizeof(struct sockaddr_in), '\0');
