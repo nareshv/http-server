@@ -26,6 +26,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <search.h>             /* for hashtable of file extensions */
 
 #define LISTEN_BACKLOG  100     /* backlog of connections */
 #define LISTEN_PORT     8080    /* port to listen on */
@@ -41,6 +42,8 @@ struct {
         char serverRoot[PATH_MAX];
         char indexFile[PATH_MAX];
         int serveIndexFileInDirectory;
+        int numFileTypes;
+        ENTRY e;
         int port;
 } ServerConfiguration;
 
@@ -208,7 +211,7 @@ void handleHTTPRequest(void *clientfd)
                         /* for logging to the stderr */
                         char ltime[27];
                         getHTTPTime(time(NULL), ltime);
-                        fprintf(stderr, "[%s] %s %s %s %ld\n", ltime, http_proto, http_method, http_url, rbytes);
+                        fprintf(stderr, "[%s] %s %s %s %zd\n", ltime, http_proto, http_method, http_url, rbytes);
                 } else {
                         /* we only support GET request */
                         snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.1 405 Method Not Allowed\r\n");
@@ -311,6 +314,7 @@ int main(int argc, char **argv)
         while (1) {
                 memset(&client_addr, sizeof(struct sockaddr_storage), '\0');
                 pthread_t client_thread;
+                client_addr_size = sizeof(struct sockaddr_storage);
                 int clientfd = accept(sock, (struct sockaddr *)&client_addr, &client_addr_size);
                 if (clientfd == -1) {
                         perror("accept()");
