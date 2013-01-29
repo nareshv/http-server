@@ -26,6 +26,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <libgen.h>
 
 #define LISTEN_BACKLOG  100     /* backlog of connections */
 #define LISTEN_PORT     8080    /* port to listen on */
@@ -37,15 +38,17 @@
 #define HTTP_MAX_PLEN   32      /* max version length */
 
 /* Global configuration structure */
-struct {                                                                                                                                                                                                                          
-        char serverRoot[PATH_MAX];                                                                                                                                                                                                
-        int port;                                                                                                                                                                                                                 
-} ServerConfiguration;                                                                                                                                                                                                            
-                                                                                                                                                                                                                                  
-/*                                                                                                                                                                                                                                
- * Return the size of the given file in Bytes.                                                                                                                                                                                    
- *                                                                                                                                                                                                                                
- * Return Codes:                                                                                                                                                                                                                  
+struct {
+        char serverRoot[PATH_MAX];
+        char indexFile[PATH_MAX];
+        int serveIndexFileInDirectory;
+        int port;
+} ServerConfiguration;
+
+/*
+ * Return the size of the given file in Bytes.
+ *
+ * Return Codes:
  * > 0 ; if file is regular file
  * -1  ; if lstat encountered any error
  * -2  ; if requested file is directory (needed for directory indexing)
@@ -93,6 +96,7 @@ int isDirectory(const char *path)
  */
 int transferFile(const char *file, int out_fd)
 {
+        char filename[PATH_MAX];
         int size = getFileSize(file);
         int in_fd;
         int offset = 0;
@@ -104,8 +108,8 @@ int transferFile(const char *file, int out_fd)
                 if (in_fd != -1) {
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 200 OK\r\n");
                         offset = strlen(headers);
-                        //snprintf(headers + offset, HTTP_MAX_HLEN, "Content-Length: %d\r\n", size);
-                        //offset = strlen(headers);
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "Content-Length: %d\r\n", size);
+                        offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
                         write(out_fd, headers, strlen(headers));
                         sentbytes = sendfile(out_fd, in_fd, NULL, size);
@@ -121,6 +125,22 @@ int transferFile(const char *file, int out_fd)
                 }
         } else {
                 if (size == -2) {
+                        /* in case we want to serve the index file in the directory */
+                        if (ServerConfiguration.serveIndexFileInDirectory == 1) {
+                                snprintf(filename, PATH_MAX, "%s/%s", file, ServerConfiguration.indexFile);
+                                fprintf(stderr, "[%s] going to serve the index file %s\n", LOG_INFO, filename);
+                                int size = getFileSize(filename);
+                                if (size > 0) {
+                                        /* check if the indexFile exists and serve it */
+                                        return transferFile(filename, out_fd);
+                                } else {
+                                        /* send a 404 */
+                                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 404 Not Found\r\n");
+                                        offset = strlen(headers);
+                                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
+                                        write(out_fd, headers, strlen(headers));
+                                }
+                        }
                         /* directory listing denied */
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 403 Forbidden\r\n");
                         offset = strlen(headers);
@@ -207,7 +227,7 @@ void handleHTTPRequest(void *clientfd)
  */
 void showHelp(char **argv)
 {
-        fprintf(stderr, "%s [port] [path/to/directory]\n", argv[0]);
+        fprintf(stderr, "%s [port] [path/to/directory] [indexFile]\n", argv[0]);
         exit(EXIT_FAILURE);
 }
 
@@ -221,7 +241,7 @@ int main(int argc, char **argv)
         int port;
 
         /* basic data validation */
-        if (argc < 3) {
+        if (argc < 4) {
                 showHelp(argv);
         }
 
@@ -240,6 +260,9 @@ int main(int argc, char **argv)
         } else {
                 snprintf(ServerConfiguration.serverRoot, PATH_MAX, "%s", argv[2]);
         }
+
+        snprintf(ServerConfiguration.indexFile, PATH_MAX, "%s", argv[3]);
+        ServerConfiguration.serveIndexFileInDirectory = 1;
 
         /* server socket */
         sock = socket(AF_INET, SOCK_STREAM, 0);
