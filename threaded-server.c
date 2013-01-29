@@ -26,7 +26,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
-#include <libgen.h>
 
 #define LISTEN_BACKLOG  100     /* backlog of connections */
 #define LISTEN_PORT     8080    /* port to listen on */
@@ -116,6 +115,7 @@ int transferFile(const char *file, int out_fd)
                         if (sentbytes == -1) {
                                 perror("sendfile()");
                         }
+                        close(in_fd);
                 } else {
                         /* open failed (due to num-open files limit reached ?) */
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 503 Service Unavailable\r\n");
