@@ -1,4 +1,8 @@
 
+Very light weight static content serving web-server written in C. Uses pthreads to achieve high concurrency.
+
+On a 4 core system with ab proved to serve 10K reqs/sec with minimal cpu usage.
+
 ---------
 Examples:
 ---------
