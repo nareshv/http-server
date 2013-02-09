@@ -31,6 +31,8 @@
 #include <search.h>             /* for hashtable of file extensions */
 #include <getopt.h>
 
+#include "my-time.h"
+
 #define LISTEN_BACKLOG  100     /* backlog of connections */
 #define LISTEN_PORT     8080    /* port to listen on */
 #define LOG_INFO        "info"  /* log level */
@@ -45,7 +47,15 @@
 
 #define LOG(format, ...) logMessage(format, __VA_ARGS__)
 
-#include "my-time.h"
+#define HTTP_BODY_403        "<!doctype html><html><head><meta charset='utf-8'><title>403</title></head><body style='background-color:#0098cf;color:#fff;'>"\
+                             "<h1>404 - Forbidden</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
+#define HTTP_BODY_404        "<!doctype html><html><head><meta charset='utf-8'><title>404</title></head><body style='background-color:#0098cf;color:#fff;'>"\
+                             "<h1>404 - Page Not Found</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
+#define HTTP_BODY_405        "<!doctype html><html><head><meta charset='utf-8'><title>405</title></head><body style='background-color:#0098cf;color:#fff;'>"\
+                             "<h1>405 - Method Not Allowed<h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
+#define HTTP_BODY_503        "<!doctype html><html><head><meta charset='utf-8'><title>503</title></head><body style='background-color:#0098cf;color:#fff;'>"\
+                             "<h1>503 - Service Unavailable</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
+
 
 /* Global configuration structure */
 struct {
@@ -158,6 +168,8 @@ int transferFile(const char *file, int out_fd, int nocontent)
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(out_fd, headers, strlen(headers));
+                        /* send the body content as well */
+                        write(out_fd, HTTP_BODY_503, strlen(HTTP_BODY_503));
                 }
         } else {
                 if (size == -2) {
@@ -177,6 +189,8 @@ int transferFile(const char *file, int out_fd, int nocontent)
                                         offset = strlen(headers);
                                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                                         write(out_fd, headers, strlen(headers));
+                                        /* send the body content as well */
+                                        write(out_fd, HTTP_BODY_404, strlen(HTTP_BODY_404));
                                 }
                         } else {
                                 /* directory listing denied */
@@ -186,6 +200,8 @@ int transferFile(const char *file, int out_fd, int nocontent)
                                 offset = strlen(headers);
                                 snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                                 write(out_fd, headers, strlen(headers));
+                                /* send the body content as well */
+                                write(out_fd, HTTP_BODY_403, strlen(HTTP_BODY_403));
                         }
                 } else {
                         /* stat syscall failed */
@@ -195,6 +211,8 @@ int transferFile(const char *file, int out_fd, int nocontent)
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(out_fd, headers, strlen(headers));
+                        /* send the body content as well */
+                        write(out_fd, HTTP_BODY_404, strlen(HTTP_BODY_404));
                 }
         }
         return sentbytes;
@@ -279,6 +297,8 @@ void handleHTTPRequest(void *clientfd)
                                 offset = strlen(headers);
                                 snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                                 write(fd, headers, strlen(headers));
+                                /* send the body content as well */
+                                write(fd, HTTP_BODY_405, strlen(HTTP_BODY_405));
                         }
                 }
         }
