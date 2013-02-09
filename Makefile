@@ -6,7 +6,7 @@ help:
 CFLAGS=-Wall -Werror -I.
 LIBS=-lpthread -L. -lmytime
 CC=gcc
-CC=clang
+#CC=clang
 S=
 
 indent:
@@ -19,16 +19,16 @@ build: libs
 	$(S)gcc $(CFLAGS) -D_GNU_SOURCE -o server threaded-server.c $(LIBS)
 
 run: build
-	$(S)env LD_LIBRARY_PATH=$(shell pwd) ./server -p 8080 -r $(shell pwd)/www -i index.html 2>/dev/null
+	$(S)env LD_LIBRARY_PATH=$(shell pwd) ./server -p 8080 -r $(shell pwd)/www -i index.html
 
 benchmark: build
 	$(S)nohup env LD_LIBRARY_PATH=$(shell pwd) ./server -p 8080 -r $(shell pwd) -i index.html >/dev/null 2>&1 &
-	$(S)ab -t 300 -c 100 http://127.0.0.1:8080/server
+	$(S)ab -t 300 -c 100 -H 'Host: localhost' http://127.0.0.1:8080/server
 	$(S)killall -9 server
 
 benchmark-head: build
 	$(S)nohup env LD_LIBRARY_PATH=$(shell pwd) ./server -p 8080 -r $(shell pwd) -i index.html >/dev/null 2>&1 &
-	$(S)ab -i -t 300 -c 100 http://127.0.0.1:8080/server
+	$(S)ab -i -t 300 -c 100 -H 'Host: localhost' http://127.0.0.1:8080/server
 	$(S)killall -9 server
 
 clean:

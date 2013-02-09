@@ -35,8 +35,6 @@
 
 #define LISTEN_BACKLOG  100     /* backlog of connections */
 #define LISTEN_PORT     8080    /* port to listen on */
-#define LOG_INFO        "info"  /* log level */
-#define LOG_ERROR       "error" /* log level */
 #define HTTP_MAX_HLEN   4096    /* max header length */
 #define HTTP_MAX_MLEN   32      /* max method length */
 #define HTTP_MAX_ULEN   256     /* max url length */
@@ -45,15 +43,20 @@
 #define CONTENT_YES     1       /* send the content in the response  */
 #define CONTENT_NO      0       /* no not send the content in the response */
 
-#define LOG(format, ...) logMessage(format, __VA_ARGS__)
+#define LOG_DEBUG(format, ...) fprintf(stderr, "[%s] " format "\n", "debug", __VA_ARGS__)
+#define LOG_INFO(format, ...)  fprintf(stderr, "[%s] " format "\n", "info", __VA_ARGS__)
+#define LOG_ERROR(format, ...) fprintf(stderr, "[%s] " format "\n", "error", __VA_ARGS__)
+#define LOG_FATAL(format, ...) fprintf(stderr, "[%s] " format "\n", "fatal", __VA_ARGS__)
 
+#define HTTP_BODY_400        "<!doctype html><html><head><meta charset='utf-8'><title>400</title></head><body style='background-color:#9800cf;color:#fff;'>"\
+                             "<h1>400 - Bad Request</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
 #define HTTP_BODY_403        "<!doctype html><html><head><meta charset='utf-8'><title>403</title></head><body style='background-color:#0098cf;color:#fff;'>"\
                              "<h1>404 - Forbidden</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
 #define HTTP_BODY_404        "<!doctype html><html><head><meta charset='utf-8'><title>404</title></head><body style='background-color:#0098cf;color:#fff;'>"\
                              "<h1>404 - Page Not Found</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
 #define HTTP_BODY_405        "<!doctype html><html><head><meta charset='utf-8'><title>405</title></head><body style='background-color:#0098cf;color:#fff;'>"\
                              "<h1>405 - Method Not Allowed<h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
-#define HTTP_BODY_503        "<!doctype html><html><head><meta charset='utf-8'><title>503</title></head><body style='background-color:#0098cf;color:#fff;'>"\
+#define HTTP_BODY_503        "<!doctype html><html><head><meta charset='utf-8'><title>503</title></head><body style='background-color:#cf9800;color:#fff;'>"\
                              "<h1>503 - Service Unavailable</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
 
 
@@ -176,7 +179,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                         /* in case we want to serve the index file in the directory */
                         if (ServerConfiguration.serveIndexFileInDirectory == 1) {
                                 snprintf(filename, PATH_MAX, "%s/%s", file, ServerConfiguration.indexFile);
-                                fprintf(stderr, "[%s] going to serve the index file %s\n", LOG_INFO, filename);
+                                LOG_DEBUG("Serving the index file : %s", filename);
                                 int size = getFileSize(filename);
                                 if (size > 0) {
                                         /* check if the indexFile exists and serve it */
@@ -246,7 +249,8 @@ void handleHTTPRequest(void *clientfd)
         char http_url[HTTP_MAX_ULEN];
         char http_proto[HTTP_MAX_PLEN];
         char file_path[PATH_MAX];
-        //char http_host[HTTP_MAX_ULEN];
+        char *host_hdr;
+        char http_host[HOST_NAME_MAX];
         ssize_t rbytes = 0;
         ssize_t toread = HTTP_MAX_HLEN;
         ssize_t offset = 0;
@@ -261,17 +265,24 @@ void handleHTTPRequest(void *clientfd)
                 perror("recv()");
         } else {
                 /* read the host header first for http/1.1 requests */
-                if (strcasestr((const char *)headers, (const char *)"host:") == NULL) {
-                        /* we only support GET request */
+                if ((host_hdr = strcasestr((const char *)headers, (const char *)"host:")) == NULL) {
+                        /* make sure that host header is present in the request (for virtual hosting) */
                         snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.1 400 Bad Request\r\n");
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(fd, headers, strlen(headers));
+                        /* send the body content as well */
+                        write(fd, HTTP_BODY_400, strlen(HTTP_BODY_400));
                 } else {
+                        /* extract host header */
+                        sscanf(host_hdr + strlen("host:"), "%63s", http_host);
+                        LOG_DEBUG("Extracted host header: %s", http_host);
+                        /* read the type of request */
                         offset = offset + rbytes;
                         toread = HTTP_MAX_HLEN - offset;
+                        rbytes = 0;
                         sscanf(headers, "%s %s %s", http_method, http_url, http_proto);
                         if (strcmp(http_method, "GET") == 0) {
                                 /* send the file to browser */
@@ -290,7 +301,7 @@ void handleHTTPRequest(void *clientfd)
                                 getLogTime(time(NULL), ltime);
                                 fprintf(stderr, "[%s] %s %s %s %zd\n", ltime, http_proto, http_method, http_url, rbytes);
                         } else {
-                                /* we only support GET request */
+                                /* we only support GET/HEAD request */
                                 snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.1 405 Method Not Allowed\r\n");
                                 offset = strlen(headers);
                                 snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
@@ -298,7 +309,12 @@ void handleHTTPRequest(void *clientfd)
                                 snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                                 write(fd, headers, strlen(headers));
                                 /* send the body content as well */
-                                write(fd, HTTP_BODY_405, strlen(HTTP_BODY_405));
+                                rbytes = strlen(HTTP_BODY_405);
+                                write(fd, HTTP_BODY_405, rbytes);
+                                /* for logging to the stderr */
+                                char ltime[27];
+                                getLogTime(time(NULL), ltime);
+                                fprintf(stderr, "[%s] %s %s %s %zd\n", ltime, http_proto, http_method, http_url, rbytes);
                         }
                 }
         }
@@ -348,7 +364,7 @@ void processArguments(int argc, char **argv)
                 case 'p':
                         port = atoi(optarg);
                         if (port > 65536 || port < 0) {
-                                fprintf(stderr, "[%s] Please give correct port number (between 1 and 65536).\n", LOG_ERROR);
+                                LOG_ERROR("%s", "Please give correct port number (between 1 and 65536)");
                                 exit(EXIT_FAILURE);
                         } else {
                                 ServerConfiguration.port = port;
@@ -357,7 +373,7 @@ void processArguments(int argc, char **argv)
                 case 'r':
                         webroot = optarg;
                         if (isDirectory(webroot) != 1) {
-                                fprintf(stderr, "[%s] Please give a directory which needs to be served via HTTP.\n", LOG_ERROR);
+                                LOG_ERROR("%s", "Please give a directory which needs to be served via HTTP.");
                                 exit(EXIT_FAILURE);
                         } else {
                                 snprintf(ServerConfiguration.serverRoot, PATH_MAX, "%s", webroot);
@@ -454,7 +470,7 @@ int main(int argc, char **argv)
                 perror("bind()");
                 return EXIT_FAILURE;
         } else {
-                fprintf(stderr, "[%s] Started listening on %d\n", LOG_INFO, LISTEN_PORT);
+                LOG_INFO("Started listening on %d", LISTEN_PORT);
         }
 
         /* let kernel queue the connections which are done with TCP 3-way handshake */
@@ -462,7 +478,7 @@ int main(int argc, char **argv)
                 perror("bind()");
                 return EXIT_FAILURE;
         } else {
-                fprintf(stderr, "[%s] Created backlog queue of size %d\n", LOG_INFO, LISTEN_BACKLOG);
+                LOG_INFO("Created backlog queue of size %d", LISTEN_BACKLOG);
         }
 
         /* drop the root privileges */
@@ -485,7 +501,7 @@ int main(int argc, char **argv)
                 if (0 == pthread_create(&client_thread, NULL, (void *)&handleHTTPRequest, (void *)&clientfd)) {
                         pthread_join(client_thread, NULL);
                 } else {
-                        fprintf(stderr, "[%s] Cannot handle the current connection.\n", LOG_INFO);
+                        LOG_FATAL("%s", "Cannot handle the current connection. Closing it.");
                         close(clientfd);    // in case we do not have additional capacity. handle at level-3, rather than at layer-7
                 }
         }
