@@ -13,6 +13,8 @@
  * (c) 2013, Naresh Kumar. Code is available under MIT License.
  */
 
+#define _D_GNU_SOURCE           /* for strcasestr() */
+
 #include <stdio.h>
 #include <pthread.h>
 #include <netdb.h>
@@ -27,6 +29,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <search.h>             /* for hashtable of file extensions */
+#include <getopt.h>
 
 #define LISTEN_BACKLOG  100     /* backlog of connections */
 #define LISTEN_PORT     8080    /* port to listen on */
@@ -36,14 +39,24 @@
 #define HTTP_MAX_MLEN   32      /* max method length */
 #define HTTP_MAX_ULEN   256     /* max url length */
 #define HTTP_MAX_PLEN   32      /* max version length */
+#define CONF_MAX_LEN    32      /* max length of config value */
+#define CONTENT_YES     1       /* send the content in the response  */
+#define CONTENT_NO      0       /* no not send the content in the response */
+
+#define LOG(format, ...) logMessage(format, __VA_ARGS__)
+
+#include "my-time.h"
 
 /* Global configuration structure */
 struct {
         char serverRoot[PATH_MAX];
         char indexFile[PATH_MAX];
+        char serverName[CONF_MAX_LEN];
         int serveIndexFileInDirectory;
         int numFileTypes;
-        ENTRY e;
+        short chroot;
+        uid_t app_uid;
+        gid_t app_gid;
         int port;
 } ServerConfiguration;
 
@@ -65,6 +78,15 @@ int getFileSize(const char *path)
                 } else if (S_ISDIR(fileinfo.st_mode)) {
                         return -2;  // directory
                 }
+        }
+        return -1;              // error
+}
+
+int getFileLastModTime(const char *path)
+{
+        struct stat fileinfo;
+        if (lstat(path, &fileinfo) != -1) {
+                return fileinfo.st_mtime;
         }
         return -1;              // error
 }
@@ -96,7 +118,7 @@ int isDirectory(const char *path)
  * -1  ; error from sendfile syscall
  *
  */
-int transferFile(const char *file, int out_fd)
+int transferFile(const char *file, int out_fd, int nocontent)
 {
         char filename[PATH_MAX];
         int size = getFileSize(file);
@@ -104,26 +126,37 @@ int transferFile(const char *file, int out_fd)
         int offset = 0;
         ssize_t sentbytes = 0;
         char headers[HTTP_MAX_HLEN];
+        char lastmodbuffer[30];
+        time_t lastmodtime;
         if (size > 0) {
+                lastmodtime = getFileLastModTime(file);
                 /* file exists and is regular file */
                 in_fd = open(file, O_RDONLY, 0);
                 if (in_fd != -1) {
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 200 OK\r\n");
                         offset = strlen(headers);
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "Date: %s\r\n", httpHeaderTime(time(NULL), lastmodbuffer, 30));
+                        offset = strlen(headers);
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "Last-Modified: %s\r\n", httpHeaderTime(lastmodtime, lastmodbuffer, 30));
+                        offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Content-Length: %d\r\n", size);
                         offset = strlen(headers);
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(out_fd, headers, strlen(headers));
-                        sentbytes = sendfile(out_fd, in_fd, NULL, size);
-                        if (sentbytes == -1) {
-                                perror("sendfile()");
+                        if (nocontent == CONTENT_YES) {
+                                sentbytes = sendfile(out_fd, in_fd, NULL, size);
+                                if (sentbytes == -1) {
+                                        perror("sendfile()");
+                                }
                         }
                         close(in_fd);
                 } else {
                         /* open failed (due to num-open files limit reached ?) */
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 503 Service Unavailable\r\n");
                         offset = strlen(headers);
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
+                        offset = strlen(headers);
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(out_fd, headers, strlen(headers));
                 }
         } else {
@@ -135,25 +168,32 @@ int transferFile(const char *file, int out_fd)
                                 int size = getFileSize(filename);
                                 if (size > 0) {
                                         /* check if the indexFile exists and serve it */
-                                        return transferFile(filename, out_fd);
+                                        return transferFile(filename, out_fd, nocontent);
                                 } else {
                                         /* send a 404 */
                                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 404 Not Found\r\n");
                                         offset = strlen(headers);
-                                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
+                                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
+                                        offset = strlen(headers);
+                                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                                         write(out_fd, headers, strlen(headers));
                                 }
+                        } else {
+                                /* directory listing denied */
+                                snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 403 Forbidden\r\n");
+                                offset = strlen(headers);
+                                snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
+                                offset = strlen(headers);
+                                snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
+                                write(out_fd, headers, strlen(headers));
                         }
-                        /* directory listing denied */
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 403 Forbidden\r\n");
-                        offset = strlen(headers);
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
-                        write(out_fd, headers, strlen(headers));
                 } else {
                         /* stat syscall failed */
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 404 Not Found\r\n");
                         offset = strlen(headers);
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
+                        offset = strlen(headers);
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(out_fd, headers, strlen(headers));
                 }
         }
@@ -163,13 +203,13 @@ int transferFile(const char *file, int out_fd)
 /*
  * return the current time as string
  */
-void getHTTPTime(time_t t, char *ltime)
+void getLogTime(time_t t, char *ltime)
 {
         time_t curtime = time(NULL);
         struct tm loctime;
         localtime_r(&curtime, &loctime);
         asctime_r(&loctime, ltime);
-        ltime[strlen(ltime) - 1] = '\0';    // consume the newline
+        ltime[strlen(ltime) - 1] = '\0';    // consume the extra newline
 }
 
 /*
@@ -188,6 +228,7 @@ void handleHTTPRequest(void *clientfd)
         char http_url[HTTP_MAX_ULEN];
         char http_proto[HTTP_MAX_PLEN];
         char file_path[PATH_MAX];
+        //char http_host[HTTP_MAX_ULEN];
         ssize_t rbytes = 0;
         ssize_t toread = HTTP_MAX_HLEN;
         ssize_t offset = 0;
@@ -201,26 +242,67 @@ void handleHTTPRequest(void *clientfd)
         if (rbytes == -1) {
                 perror("recv()");
         } else {
-                offset = offset + rbytes;
-                toread = HTTP_MAX_HLEN - offset;
-                sscanf(headers, "%s %s %s", http_method, http_url, http_proto);
-                if (strcmp(http_method, "GET") == 0) {
-                        /* send the file to browser */
-                        snprintf(file_path, PATH_MAX, "%s/%s", ServerConfiguration.serverRoot, http_url);
-                        rbytes = transferFile(file_path, fd);
-                        /* for logging to the stderr */
-                        char ltime[27];
-                        getHTTPTime(time(NULL), ltime);
-                        fprintf(stderr, "[%s] %s %s %s %zd\n", ltime, http_proto, http_method, http_url, rbytes);
-                } else {
+                /* read the host header first for http/1.1 requests */
+                if (strcasestr((const char *)headers, (const char *)"host:") == NULL) {
                         /* we only support GET request */
-                        snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.1 405 Method Not Allowed\r\n");
+                        snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.1 400 Bad Request\r\n");
                         offset = strlen(headers);
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", "NareshWebServer");
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
+                        offset = strlen(headers);
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(fd, headers, strlen(headers));
+                } else {
+                        offset = offset + rbytes;
+                        toread = HTTP_MAX_HLEN - offset;
+                        sscanf(headers, "%s %s %s", http_method, http_url, http_proto);
+                        if (strcmp(http_method, "GET") == 0) {
+                                /* send the file to browser */
+                                snprintf(file_path, PATH_MAX, "%s/%s", ServerConfiguration.serverRoot, http_url);
+                                rbytes = transferFile(file_path, fd, CONTENT_YES);
+                                /* for logging to the stderr */
+                                char ltime[27];
+                                getLogTime(time(NULL), ltime);
+                                fprintf(stderr, "[%s] %s %s %s %zd\n", ltime, http_proto, http_method, http_url, rbytes);
+                        } else if (strcmp(http_method, "HEAD") == 0) {
+                                /* send the information about file to browser */
+                                snprintf(file_path, PATH_MAX, "%s/%s", ServerConfiguration.serverRoot, http_url);
+                                rbytes = transferFile(file_path, fd, CONTENT_NO);
+                                /* for logging to the stderr */
+                                char ltime[27];
+                                getLogTime(time(NULL), ltime);
+                                fprintf(stderr, "[%s] %s %s %s %zd\n", ltime, http_proto, http_method, http_url, rbytes);
+                        } else {
+                                /* we only support GET request */
+                                snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.1 405 Method Not Allowed\r\n");
+                                offset = strlen(headers);
+                                snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
+                                offset = strlen(headers);
+                                snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
+                                write(fd, headers, strlen(headers));
+                        }
                 }
         }
         close(fd);
+}
+
+int dropRootPrivileges(uid_t uid, gid_t gid)
+{
+        if (getuid() == 0) {
+                /* process is running as root, drop privileges */
+                if (setgid(gid) != 0) {
+                        perror("setgid()");
+                        return -1;
+                }
+                if (setuid(uid) != 0) {
+                        perror("setuid()");
+                        return -1;
+                }
+        }
+        if (setuid(0) != -1) {
+                exit(EXIT_FAILURE);
+                return -1;
+        }
+        return 0;
 }
 
 /*
@@ -230,8 +312,80 @@ void handleHTTPRequest(void *clientfd)
  */
 void showHelp(char **argv)
 {
-        fprintf(stderr, "%s [port] [path/to/directory] [indexFile]\n", argv[0]);
+        //fprintf(stderr, "usage: %s [port] [path/to/directory] [indexFile]\n", argv[0]);
+        fprintf(stderr, "usage: %s -p <port> -r <webroot> -i <indexFile>\n", argv[0]);
         exit(EXIT_FAILURE);
+}
+
+void processArguments(int argc, char **argv)
+{
+        char *webroot = NULL, *indexfile = NULL;
+        int option = 0;
+        int port = -1;
+
+        while ((option = getopt(argc, argv, "p:r:i:u:g:")) != -1) {
+                switch (option) {
+                case 'p':
+                        port = atoi(optarg);
+                        if (port > 65536 || port < 0) {
+                                fprintf(stderr, "[%s] Please give correct port number (between 1 and 65536).\n", LOG_ERROR);
+                                exit(EXIT_FAILURE);
+                        } else {
+                                ServerConfiguration.port = port;
+                        }
+                        break;
+                case 'r':
+                        webroot = optarg;
+                        if (isDirectory(webroot) != 1) {
+                                fprintf(stderr, "[%s] Please give a directory which needs to be served via HTTP.\n", LOG_ERROR);
+                                exit(EXIT_FAILURE);
+                        } else {
+                                snprintf(ServerConfiguration.serverRoot, PATH_MAX, "%s", webroot);
+                        }
+                        break;
+                case 'i':
+                        indexfile = optarg;
+                        snprintf(ServerConfiguration.indexFile, PATH_MAX, "%s", indexfile);
+                        break;
+                case 'u':
+                        ServerConfiguration.app_uid = atoi(optarg);
+                        break;
+                case 'g':
+                        ServerConfiguration.app_gid = atoi(optarg);
+                        break;
+                default:
+                        showHelp(argv);
+                        break;
+                }
+        }
+
+        /* basic data validation */
+        if (port == -1 || webroot == NULL || indexfile == NULL) {
+                showHelp(argv);
+        }
+
+        /* update the server configuration structure */
+        snprintf(ServerConfiguration.serverName, CONF_MAX_LEN, "%s", "Route5/1.0");
+        ServerConfiguration.serveIndexFileInDirectory = 1;
+        ServerConfiguration.app_uid = 1000;
+        ServerConfiguration.app_gid = 1000;
+
+}
+
+void doChroot()
+{
+        /* do a chroot to the root dir */
+        if (chroot(ServerConfiguration.serverRoot) == -1) {
+                perror("chroot()");
+                exit(EXIT_FAILURE);
+        }
+
+        /* switch to the root of the filesystem */
+        sprintf(ServerConfiguration.serverRoot, "%s", "/");
+        if (chdir(ServerConfiguration.serverRoot) == -1) {
+                perror("chdir()");
+                exit(EXIT_FAILURE);
+        }
 }
 
 /* This is where the program execution starts at runtime */
@@ -241,31 +395,12 @@ int main(int argc, char **argv)
         struct sockaddr_in saddr;
         struct sockaddr_storage client_addr;
         socklen_t client_addr_size;
-        int port;
 
-        /* basic data validation */
-        if (argc < 4) {
-                showHelp(argv);
-        }
+        /* process cmdline arguments */
+        processArguments(argc, argv);
 
-        port = atoi(argv[1]);
-
-        if (port > 65536 || port < 0) {
-                fprintf(stderr, "[%s] Please give correct port number (between 1 and 65536).\n", LOG_ERROR);
-                return EXIT_FAILURE;
-        } else {
-                ServerConfiguration.port = port;
-        }
-
-        if (isDirectory(argv[2]) != 1) {
-                fprintf(stderr, "[%s] Please give a directory which needs to be served via HTTP.\n", LOG_ERROR);
-                return EXIT_FAILURE;
-        } else {
-                snprintf(ServerConfiguration.serverRoot, PATH_MAX, "%s", argv[2]);
-        }
-
-        snprintf(ServerConfiguration.indexFile, PATH_MAX, "%s", argv[3]);
-        ServerConfiguration.serveIndexFileInDirectory = 1;
+        /* do chroot if needed */
+        //doChroot();
 
         /* server socket */
         sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -310,6 +445,9 @@ int main(int argc, char **argv)
                 fprintf(stderr, "[%s] Created backlog queue of size %d\n", LOG_INFO, LISTEN_BACKLOG);
         }
 
+        /* drop the root privileges */
+        dropRootPrivileges(1000, 1000);
+
         /* in this simple example, wait forever */
         while (1) {
                 memset(&client_addr, sizeof(struct sockaddr_storage), '\0');
@@ -324,8 +462,12 @@ int main(int argc, char **argv)
                  * now we are stressing the system to an extent that thread creation should be a problem to handle C10K
                  * connections!
                  **/
-                pthread_create(&client_thread, NULL, (void *)&handleHTTPRequest, (void *)&clientfd);
-                pthread_join(client_thread, NULL);
+                if (0 == pthread_create(&client_thread, NULL, (void *)&handleHTTPRequest, (void *)&clientfd)) {
+                        pthread_join(client_thread, NULL);
+                } else {
+                        fprintf(stderr, "[%s] Cannot handle the current connection.\n", LOG_INFO);
+                        close(clientfd);    // in case we do not have additional capacity. handle at level-3, rather than at layer-7
+                }
         }
 
         /* pretend everything went great */
