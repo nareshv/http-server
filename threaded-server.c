@@ -32,6 +32,7 @@
 #include <getopt.h>
 
 #include "my-time.h"
+#include "my-utils.h"
 
 #define LISTEN_BACKLOG  100     /* backlog of connections */
 #define LISTEN_PORT     8080    /* port to listen on */
@@ -78,14 +79,14 @@ struct {
  *
  * Return Codes:
  * > 0 ; if file is regular file
- * -1  ; if lstat encountered any error
+ * -1  ; if stat encountered any error
  * -2  ; if requested file is directory (needed for directory indexing)
  *
  */
 int getFileSize(const char *path)
 {
         struct stat fileinfo;
-        if (lstat(path, &fileinfo) != -1) {
+        if (stat(path, &fileinfo) != -1) {
                 if (S_ISREG(fileinfo.st_mode)) {
                         return fileinfo.st_size;
                 } else if (S_ISDIR(fileinfo.st_mode)) {
@@ -98,7 +99,7 @@ int getFileSize(const char *path)
 int getFileLastModTime(const char *path)
 {
         struct stat fileinfo;
-        if (lstat(path, &fileinfo) != -1) {
+        if (stat(path, &fileinfo) != -1) {
                 return fileinfo.st_mtime;
         }
         return -1;              // error
@@ -115,7 +116,7 @@ int getFileLastModTime(const char *path)
 int isDirectory(const char *path)
 {
         struct stat fileinfo;
-        if (lstat(path, &fileinfo) != -1) {
+        if (stat(path, &fileinfo) != -1) {
                 if (S_ISDIR(fileinfo.st_mode)) {
                         return 1;   // directory
                 }
@@ -146,7 +147,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                 /* file exists and is regular file */
                 in_fd = open(file, O_RDONLY, 0);
                 if (in_fd != -1) {
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 200 OK\r\n");
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.0 200 OK\r\n");
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Date: %s\r\n", httpHeaderTime(time(NULL), lastmodbuffer, 30));
                         offset = strlen(headers);
@@ -165,7 +166,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                         close(in_fd);
                 } else {
                         /* open failed (due to num-open files limit reached ?) */
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 503 Service Unavailable\r\n");
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.0 503 Service Unavailable\r\n");
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
                         offset = strlen(headers);
@@ -186,7 +187,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                                         return transferFile(filename, out_fd, nocontent);
                                 } else {
                                         /* send a 404 */
-                                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 404 Not Found\r\n");
+                                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.0 404 Not Found\r\n");
                                         offset = strlen(headers);
                                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
                                         offset = strlen(headers);
@@ -197,7 +198,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                                 }
                         } else {
                                 /* directory listing denied */
-                                snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 403 Forbidden\r\n");
+                                snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.0 403 Forbidden\r\n");
                                 offset = strlen(headers);
                                 snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
                                 offset = strlen(headers);
@@ -208,7 +209,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                         }
                 } else {
                         /* stat syscall failed */
-                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.1 404 Not Found\r\n");
+                        snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.0 404 Not Found\r\n");
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
                         offset = strlen(headers);
@@ -247,6 +248,8 @@ void handleHTTPRequest(void *clientfd)
         char headers[HTTP_MAX_HLEN];
         char http_method[HTTP_MAX_MLEN];
         char http_url[HTTP_MAX_ULEN];
+        char http_url_path[HTTP_MAX_ULEN];
+        char http_url_qs[HTTP_MAX_ULEN];
         char http_proto[HTTP_MAX_PLEN];
         char file_path[PATH_MAX];
         char *host_hdr;
@@ -264,29 +267,37 @@ void handleHTTPRequest(void *clientfd)
         if (rbytes == -1) {
                 perror("recv()");
         } else {
+                LOG_DEBUG("%s", headers);
                 /* read the host header first for http/1.1 requests */
                 if ((host_hdr = strcasestr((const char *)headers, (const char *)"host:")) == NULL) {
                         /* make sure that host header is present in the request (for virtual hosting) */
-                        snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.1 400 Bad Request\r\n");
+                        snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.0 400 Bad Request\r\n");
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
                         offset = strlen(headers);
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(fd, headers, strlen(headers));
+
                         /* send the body content as well */
                         write(fd, HTTP_BODY_400, strlen(HTTP_BODY_400));
                 } else {
                         /* extract host header */
                         sscanf(host_hdr + strlen("host:"), "%63s", http_host);
                         LOG_DEBUG("Extracted host header: %s", http_host);
+
                         /* read the type of request */
                         offset = offset + rbytes;
                         toread = HTTP_MAX_HLEN - offset;
                         rbytes = 0;
                         sscanf(headers, "%s %s %s", http_method, http_url, http_proto);
+
+                        /* extract the query parameters from the url if any */
+                        extractURLDetails(http_url, http_url_path, http_url_qs);
+
+                        /* handle the request */
                         if (strcmp(http_method, "GET") == 0) {
                                 /* send the file to browser */
-                                snprintf(file_path, PATH_MAX, "%s/%s", ServerConfiguration.serverRoot, http_url);
+                                snprintf(file_path, PATH_MAX, "%s/%s", ServerConfiguration.serverRoot, http_url_path);
                                 rbytes = transferFile(file_path, fd, CONTENT_YES);
                                 /* for logging to the stderr */
                                 char ltime[27];
@@ -294,7 +305,7 @@ void handleHTTPRequest(void *clientfd)
                                 fprintf(stderr, "[%s] %s %s %s %zd\n", ltime, http_proto, http_method, http_url, rbytes);
                         } else if (strcmp(http_method, "HEAD") == 0) {
                                 /* send the information about file to browser */
-                                snprintf(file_path, PATH_MAX, "%s/%s", ServerConfiguration.serverRoot, http_url);
+                                snprintf(file_path, PATH_MAX, "%s/%s", ServerConfiguration.serverRoot, http_url_path);
                                 rbytes = transferFile(file_path, fd, CONTENT_NO);
                                 /* for logging to the stderr */
                                 char ltime[27];
@@ -302,7 +313,7 @@ void handleHTTPRequest(void *clientfd)
                                 fprintf(stderr, "[%s] %s %s %s %zd\n", ltime, http_proto, http_method, http_url, rbytes);
                         } else {
                                 /* we only support GET/HEAD request */
-                                snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.1 405 Method Not Allowed\r\n");
+                                snprintf(headers, HTTP_MAX_HLEN, "%s", "HTTP/1.0 405 Method Not Allowed\r\n");
                                 offset = strlen(headers);
                                 snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
                                 offset = strlen(headers);
@@ -482,7 +493,7 @@ int main(int argc, char **argv)
         }
 
         /* drop the root privileges */
-        dropRootPrivileges(1000, 1000);
+        // dropRootPrivileges(1000, 1000);
 
         /* in this simple example, wait forever */
         while (1) {
@@ -494,10 +505,7 @@ int main(int argc, char **argv)
                         perror("accept()");
                         break;
                 }
-                /*
-                 * now we are stressing the system to an extent that thread creation should be a problem to handle C10K
-                 * connections!
-                 **/
+                /* Let the kernel take care of threads and connections */
                 if (0 == pthread_create(&client_thread, NULL, (void *)&handleHTTPRequest, (void *)&clientfd)) {
                         pthread_join(client_thread, NULL);
                 } else {

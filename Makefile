@@ -4,7 +4,7 @@ help:
 	@echo "syntax: make (build|run|clean)"
 
 CFLAGS=-Wall -Werror -I.
-LIBS=-lpthread -L. -lmytime
+LIBS=-lpthread -L. -lmytime -lmyutils
 CC=gcc
 #CC=clang
 S=
@@ -14,6 +14,7 @@ indent:
 
 libs:
 	$(S)gcc -D_SHLIB_ $(CFLAGS) -fpic -shared -o libmytime.so my-time.c
+	$(S)gcc -D_SHLIB_ $(CFLAGS) -fpic -shared -o libmyutils.so my-utils.c
 
 build: libs
 	$(S)gcc $(CFLAGS) -D_GNU_SOURCE -o server threaded-server.c $(LIBS)
