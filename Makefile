@@ -4,17 +4,18 @@ help:
 	@echo "syntax: make (build|run|clean)"
 
 CFLAGS=-Wall -Werror -I.
-LIBS=-lpthread -L. -lmytime -lmyutils
+LIBS=-lpthread -L. -lmytime -lmyutils -lmyurl
 CC=gcc
 #CC=clang
 S=
 
 indent:
-	$(S)indent -linux -nut -ts4 -l1024 threaded-server.c
+	for file in `echo *.c`; do indent -linux -nut -ts4 -l1024 $$file; done
 
 libs:
 	$(S)gcc -D_SHLIB_ $(CFLAGS) -fpic -shared -o libmytime.so my-time.c
 	$(S)gcc -D_SHLIB_ $(CFLAGS) -fpic -shared -o libmyutils.so my-utils.c
+	$(S)gcc -D_SHLIB_ $(CFLAGS) -fpic -shared -o libmyurl.so my-url.c
 
 build: libs
 	$(S)gcc $(CFLAGS) -D_GNU_SOURCE -o server threaded-server.c $(LIBS)

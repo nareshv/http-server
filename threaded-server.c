@@ -33,9 +33,9 @@
 
 #include "my-time.h"
 #include "my-utils.h"
+#include "my-url.h"
 
 #define LISTEN_BACKLOG  100     /* backlog of connections */
-#define LISTEN_PORT     8080    /* port to listen on */
 #define HTTP_MAX_HLEN   4096    /* max header length */
 #define HTTP_MAX_MLEN   32      /* max method length */
 #define HTTP_MAX_ULEN   256     /* max url length */
@@ -59,7 +59,6 @@
                              "<h1>405 - Method Not Allowed<h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
 #define HTTP_BODY_503        "<!doctype html><html><head><meta charset='utf-8'><title>503</title></head><body style='background-color:#cf9800;color:#fff;'>"\
                              "<h1>503 - Service Unavailable</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
-
 
 /* Global configuration structure */
 struct {
@@ -292,6 +291,9 @@ void handleHTTPRequest(void *clientfd)
                         sscanf(headers, "%s %s %s", http_method, http_url, http_proto);
 
                         /* extract the query parameters from the url if any */
+                        char *http_url_tmp = url_decode(http_url);
+                        strncpy(http_url, http_url_tmp, strlen(http_url_tmp));
+                        free(http_url_tmp);
                         extractURLDetails(http_url, http_url_path, http_url_qs);
 
                         /* handle the request */
@@ -473,7 +475,7 @@ int main(int argc, char **argv)
         memset(&saddr, sizeof(struct sockaddr_in), '\0');
 
         saddr.sin_family = AF_INET;
-        saddr.sin_port = htons(LISTEN_PORT);
+        saddr.sin_port = htons(ServerConfiguration.port);
         saddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
         /* tell the kernel that we are interested in given ip/port for connections on given socket */
@@ -481,7 +483,7 @@ int main(int argc, char **argv)
                 perror("bind()");
                 return EXIT_FAILURE;
         } else {
-                LOG_INFO("Started listening on %d", LISTEN_PORT);
+                LOG_INFO("Started listening on %d", ServerConfiguration.port);
         }
 
         /* let kernel queue the connections which are done with TCP 3-way handshake */
