@@ -20,7 +20,7 @@
 #include <netdb.h>
 #include <sys/socket.h>         /* socket() */
 #include <string.h>             /* memset() */
-#include <stdlib.h>             /* EXIT_FAILURE */
+#include <stdlib.h>             /* EXIT_FAILURE, realpath() */
 #include <errno.h>
 #include <unistd.h>             /* close() */
 #include <sys/sendfile.h>
@@ -44,10 +44,11 @@
 #define CONTENT_YES     1       /* send the content in the response  */
 #define CONTENT_NO      0       /* no not send the content in the response */
 
-#define LOG_DEBUG(format, ...) fprintf(stderr, "[%s] " format "\n", "debug", __VA_ARGS__)
-#define LOG_INFO(format, ...)  fprintf(stderr, "[%s] " format "\n", "info", __VA_ARGS__)
-#define LOG_ERROR(format, ...) fprintf(stderr, "[%s] " format "\n", "error", __VA_ARGS__)
-#define LOG_FATAL(format, ...) fprintf(stderr, "[%s] " format "\n", "fatal", __VA_ARGS__)
+#define LOG_DEBUG(format, ...)   fprintf(stderr, "[%s] " format "\n", "debug", __VA_ARGS__)
+#define LOG_INFO(format, ...)    fprintf(stderr, "[%s] " format "\n", "info", __VA_ARGS__)
+#define LOG_NOTICE(format, ...)  fprintf(stderr, "[%s] " format "\n", "notice", __VA_ARGS__)
+#define LOG_ERROR(format, ...)   fprintf(stderr, "[%s] " format "\n", "error", __VA_ARGS__)
+#define LOG_FATAL(format, ...)   fprintf(stderr, "[%s] " format "\n", "fatal", __VA_ARGS__)
 
 #define HTTP_BODY_400        "<!doctype html><html><head><meta charset='utf-8'><title>400</title></head><body style='background-color:#9800cf;color:#fff;'>"\
                              "<h1>400 - Bad Request</h1><hr style='border: 1px solid #fff; height: 0'></body></html>"
@@ -134,13 +135,32 @@ int isDirectory(const char *path)
 int transferFile(const char *file, int out_fd, int nocontent)
 {
         char filename[PATH_MAX];
-        int size = getFileSize(file);
+        int size = 0;
         int in_fd;
         int offset = 0;
         ssize_t sentbytes = 0;
         char headers[HTTP_MAX_HLEN];
         char lastmodbuffer[30];
         time_t lastmodtime;
+        char *tmp_path;
+        /* security check if file is within server root */
+        tmp_path = realpath(file, NULL);
+        if (strstr(tmp_path, ServerConfiguration.serverRoot) != tmp_path) {
+                LOG_NOTICE("Serving the file outside root denied : %s -> %s", file, tmp_path);
+                /* directory listing denied */
+                snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "HTTP/1.0 403 Forbidden\r\n");
+                offset = strlen(headers);
+                snprintf(headers + offset, HTTP_MAX_HLEN, "%s", "Connection: close\r\n");
+                offset = strlen(headers);
+                snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
+                write(out_fd, headers, strlen(headers));
+                /* send the body content as well */
+                sentbytes = write(out_fd, HTTP_BODY_403, strlen(HTTP_BODY_403));
+                free(tmp_path);
+                return sentbytes;
+        }
+        free(tmp_path);
+        size = getFileSize(file);
         if (size > 0) {
                 lastmodtime = getFileLastModTime(file);
                 /* file exists and is regular file */
@@ -172,14 +192,14 @@ int transferFile(const char *file, int out_fd, int nocontent)
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(out_fd, headers, strlen(headers));
                         /* send the body content as well */
-                        write(out_fd, HTTP_BODY_503, strlen(HTTP_BODY_503));
+                        sentbytes = write(out_fd, HTTP_BODY_503, strlen(HTTP_BODY_503));
                 }
         } else {
                 if (size == -2) {
                         /* in case we want to serve the index file in the directory */
                         if (ServerConfiguration.serveIndexFileInDirectory == 1) {
                                 snprintf(filename, PATH_MAX, "%s/%s", file, ServerConfiguration.indexFile);
-                                LOG_DEBUG("Serving the index file : %s", filename);
+                                // LOG_DEBUG("Serving the index file : %s", filename);
                                 int size = getFileSize(filename);
                                 if (size > 0) {
                                         /* check if the indexFile exists and serve it */
@@ -193,7 +213,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                                         write(out_fd, headers, strlen(headers));
                                         /* send the body content as well */
-                                        write(out_fd, HTTP_BODY_404, strlen(HTTP_BODY_404));
+                                        sentbytes = write(out_fd, HTTP_BODY_404, strlen(HTTP_BODY_404));
                                 }
                         } else {
                                 /* directory listing denied */
@@ -204,7 +224,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                                 snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                                 write(out_fd, headers, strlen(headers));
                                 /* send the body content as well */
-                                write(out_fd, HTTP_BODY_403, strlen(HTTP_BODY_403));
+                                sentbytes = write(out_fd, HTTP_BODY_403, strlen(HTTP_BODY_403));
                         }
                 } else {
                         /* stat syscall failed */
@@ -215,7 +235,7 @@ int transferFile(const char *file, int out_fd, int nocontent)
                         snprintf(headers + offset, HTTP_MAX_HLEN, "Server: %s\r\n\r\n", ServerConfiguration.serverName);
                         write(out_fd, headers, strlen(headers));
                         /* send the body content as well */
-                        write(out_fd, HTTP_BODY_404, strlen(HTTP_BODY_404));
+                        sentbytes = write(out_fd, HTTP_BODY_404, strlen(HTTP_BODY_404));
                 }
         }
         return sentbytes;
@@ -266,7 +286,7 @@ void handleHTTPRequest(void *clientfd)
         if (rbytes == -1) {
                 perror("recv()");
         } else {
-                LOG_DEBUG("%s", headers);
+                // LOG_DEBUG("%s", headers);
                 /* read the host header first for http/1.1 requests */
                 if ((host_hdr = strcasestr((const char *)headers, (const char *)"host:")) == NULL) {
                         /* make sure that host header is present in the request (for virtual hosting) */
@@ -282,7 +302,7 @@ void handleHTTPRequest(void *clientfd)
                 } else {
                         /* extract host header */
                         sscanf(host_hdr + strlen("host:"), "%63s", http_host);
-                        LOG_DEBUG("Extracted host header: %s", http_host);
+                        // LOG_DEBUG("Extracted host header: %s", http_host);
 
                         /* read the type of request */
                         offset = offset + rbytes;
@@ -385,11 +405,15 @@ void processArguments(int argc, char **argv)
                         break;
                 case 'r':
                         webroot = optarg;
+                        if (webroot[0] != '/') {
+                                LOG_ERROR("Please mention absolute root directory. Not %s", webroot);
+                                exit(EXIT_FAILURE);
+                        }
                         if (isDirectory(webroot) != 1) {
                                 LOG_ERROR("%s", "Please give a directory which needs to be served via HTTP.");
                                 exit(EXIT_FAILURE);
                         } else {
-                                snprintf(ServerConfiguration.serverRoot, PATH_MAX, "%s", webroot);
+                                snprintf(ServerConfiguration.serverRoot, PATH_MAX, "%s", realpath(webroot, NULL));
                         }
                         break;
                 case 'i':
@@ -493,6 +517,8 @@ int main(int argc, char **argv)
         } else {
                 LOG_INFO("Created backlog queue of size %d", LISTEN_BACKLOG);
         }
+
+        LOG_INFO("Server root directory is %s", ServerConfiguration.serverRoot);
 
         /* drop the root privileges */
         // dropRootPrivileges(1000, 1000);
