@@ -292,7 +292,7 @@ void handleHTTPRequest(void *clientfd)
 
                         /* extract the query parameters from the url if any */
                         char *http_url_tmp = url_decode(http_url);
-                        strncpy(http_url, http_url_tmp, strlen(http_url_tmp));
+                        sprintf(http_url, "%s", http_url_tmp);
                         free(http_url_tmp);
                         extractURLDetails(http_url, http_url_path, http_url_qs);
 
