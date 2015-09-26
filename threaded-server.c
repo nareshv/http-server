@@ -496,7 +496,7 @@ int main(int argc, char **argv)
 #endif
 
         /* make sure structure is emptied correctly. */
-        memset(&saddr, sizeof(struct sockaddr_in), '\0');
+        memset(&saddr, 0, sizeof(struct sockaddr_in));
 
         saddr.sin_family = AF_INET;
         saddr.sin_port = htons(ServerConfiguration.port);
@@ -525,7 +525,7 @@ int main(int argc, char **argv)
 
         /* in this simple example, wait forever */
         while (1) {
-                memset(&client_addr, sizeof(struct sockaddr_storage), '\0');
+                memset(&client_addr, 0, sizeof(struct sockaddr_storage));
                 pthread_t client_thread;
                 client_addr_size = sizeof(struct sockaddr_storage);
                 int clientfd = accept(sock, (struct sockaddr *)&client_addr, &client_addr_size);
